@@ -1,0 +1,1382 @@
+<html>
+  <head>
+    <script src="https://apis.google.com/js/client.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+      }
+      body,textarea {
+        font-family: monospace;
+        font-size: 12pt;
+      }
+      .console {
+        height: 100%;
+        width: 100%;
+        background: black;
+        color: #ccc;
+        overflow: auto;
+      }
+      .input-cursor {
+        white-space: pre;
+      }
+      .input-container {
+        display: flex;
+        width: 100%; 
+      }
+      .input-container,.output-block {
+        padding: 5px;
+        margin: 0;
+      }
+      .input {
+        padding: 0;
+        margin: 0;
+        flex: 1; 
+        resize: none;
+        width: 100%;
+        background: transparent;
+        border: none;
+        color: white;
+        outline: none;
+        word-break: break-all;
+      }
+      .output-block {
+        max-width: 100%;
+      }
+      .output-block-image {
+        max-height: 100%;
+      }
+      .output-block-text {
+        word-break: break-all;
+        white-space: pre-wrap;
+      }
+      .ls-item-folder {
+        color: #88F;
+      }
+      .ls-item {
+				display: inline-block;
+				padding: 5px;
+			}
+    </style>
+  </head>
+
+  <body>
+    <div id="console" class="console">
+      <div id="output"></div>
+      <div id="input-container" class="input-container" style="display:none">
+        <div id="input-cursor" class="input-cursor"></div>
+        <textarea id="input" class="input"></textarea>
+      </div>
+    </div>
+  </body>
+
+  <script>
+    var FOLDER_MIMETYPE = 'application/vnd.google-apps.folder';
+    var QUAL_URL = 'https://content-googleapis-test.sandbox.google.com';
+    var FIELDS = 'id,title,mimeType,parents(id),fileExtension,downloadUrl';
+    var APP_FIELDS = "id,createUrl,installed,name,openUrlTemplate,primaryFileExtensions,primaryMimeTypes,secondaryFileExtensions,secondaryMimeTypes,supportsCreate,useByDefault";
+    var $1 = {};
+   
+    var goog = {};
+    goog.inherits = function(childCtor, parentCtor) {
+      /** @constructor */
+      function tempCtor() {};
+      tempCtor.prototype = parentCtor.prototype;
+      childCtor.superClass_ = parentCtor.prototype;
+      childCtor.prototype = new tempCtor();
+      childCtor.prototype.constructor = childCtor;
+    };
+    goog.base = function(me, opt_methodName, var_args) {
+      var caller = arguments.callee.caller;
+      if (caller.superClass_) {
+        return caller.superClass_.constructor.apply(
+            me, Array.prototype.slice.call(arguments, 1));
+      }
+      var args = Array.prototype.slice.call(arguments, 2);
+      var foundCaller = false;
+      for (var ctor = me.constructor;
+           ctor; ctor = ctor.superClass_ && ctor.superClass_.constructor) {
+        if (ctor.prototype[opt_methodName] === caller) {
+          foundCaller = true;
+        } else if (foundCaller) {
+          return ctor.prototype[opt_methodName].apply(me, args);
+        }
+      }
+      if (me[opt_methodName] === caller) {
+        return me.constructor.prototype[opt_methodName].apply(me, args);
+      } else {
+        throw Error(
+            'goog.base called from a method of one name ' +
+            'to a method of a different name');
+      }
+    };
+
+    // Utilities
+    String.prototype.startsWith = function (value){
+      return this.slice(0, value.length) == value;
+    };
+    String.prototype.endsWith = function (value){
+      return this.slice(this.length - value.length) == value;
+    };
+    var util = {};
+    util.array = {};
+    util.array.each = function(arr, fn) {
+      for (var i = 0; i < arr.length; i++) {
+        fn(arr[i]);
+      }
+    }
+    util.array.some = function(arr, fn) {
+      for (var i = 0; i < arr.length; i++) {
+        if (fn(arr[i])) {
+          return true;
+        }
+      }
+      return false;
+    }
+    util.array.all = function(arr, fn) {
+      for (var i = 0; i < arr.length; i++) {
+        if (!fn(arr[i])) {
+          return false;
+        }
+      }
+      return true;
+    };
+    util.array.none = function(arr, fn) {
+      for (var i = 0; i < arr.length; i++) {
+        if (fn(arr[i])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    util.array.map = function(arr, fn) {
+      var newArr = [];
+      util.array.each(arr, function(item) {
+        newArr.push(fn(item));
+      });
+      return newArr;
+    };
+    util.object = {};
+    util.object.each = function(obj, fn) {
+      for (var key in obj) {
+        fn(obj[key]);
+      }
+    };
+    util.doLater = function(fn) {
+      window.setTimeout(fn, 0);
+    };
+    var Deferred = function() {
+      this.callbacks_ = [];
+      this.errbacks_ = [];
+      this.val_ = null;
+      this.isError_ = false;
+      this.hasFired_ = false;
+    };
+    Deferred.prototype.addCallbacks = function(cb, eb) {
+      if (cb) {
+        this.callbacks_.push(cb);
+      }
+      if (eb) {
+        this.errbacks_.push(eb);
+      }
+      if (this.hasFired_) {
+        if (this.isError_) {
+          eb(this.val_);
+        } else {
+          cb(this.val_);
+        }
+      }
+    };
+    Deferred.prototype.addBoth = function(fn) {
+      this.addCallbacks(fn, fn);
+    };
+    Deferred.prototype.callback = function(val) {
+      this.val_ = val;
+      this.hasFired_ = true;
+      util.array.each(this.callbacks_, function(callback) {
+        callback(this.val_);
+      }.bind(this));
+    };
+    Deferred.prototype.errback = function(val) {
+      this.val_ = val;
+      this.hasFired_ = true;
+      this.isError_ = true;
+      util.array.each(this.errbacks_, function(errback) {
+        errback(this.val_);
+      }.bind(this));
+    };
+    Deferred.succeed = function(val) {
+      var deferred = new Deferred();
+      deferred.callback(val);
+      return deferred;
+    };
+    Deferred.fail = function(val) {
+      var deferred = new Deferred();
+      deferred.errback(val);
+      return deferred;
+    };
+    var queryParam = function(name) {
+      name = name.replace(/[\[]/, "\\[").replace(/[\]]/, "\\]");
+      var regex = new RegExp("[\\?&]" + name + "=([^&#]*)"),
+          results = regex.exec(location.search);
+      return results == null ? "" : decodeURIComponent(results[1].replace(/\+/g, " "));
+    };
+    var TrieNode = function(prefix, value) {
+      this.children = {};
+      this.prefix = prefix;
+      this.value = value;
+    };
+    TrieNode.prototype.find = function(prefix) {
+      var trieNode = this;
+      for (var i = 0; i < prefix.length; i++) {
+        var ch = prefix.charAt(i);
+        if (!(trieNode = trieNode.children[ch])) {
+          return null;
+        }
+      }
+      return trieNode;
+    };
+    var TabCompleter = function(words) {
+      this.trieRoot_ = new TrieNode('', []);
+      if (words) { this.addAll(words); }
+    };
+    TabCompleter.prototype.clear = function() {
+      this.trieRoot_ = new TrieNode('', []);
+    };
+    TabCompleter.prototype.add = function(word) {
+      this.trieRoot_.value.push(word);
+      var trieNode = this.trieRoot_;
+      for (var i = 0; i < word.length; i++) {
+        var ch = word.charAt(i);
+        if (!trieNode.children[ch]) {
+          trieNode.children[ch] = new TrieNode(trieNode.prefix + ch, []);
+        }
+        trieNode.children[ch].value.push(word);
+        trieNode = trieNode.children[ch];
+      }
+    };
+    TabCompleter.prototype.addAll = function(words) {
+      util.array.each(words, this.add.bind(this));
+    };
+    TabCompleter.prototype.complete = function(prefix) {
+      var trieNode = this.trieRoot_.find(prefix);
+      while (trieNode && Object.keys(trieNode.children).length == 1) {
+        trieNode = trieNode.children[Object.keys(trieNode.children)[0]];
+      }
+      return trieNode ? trieNode.prefix : null;
+    };
+    TabCompleter.prototype.list = function(prefix) {
+      var match = this.trieRoot_.find(prefix);
+      return match ? match.value : []; 
+    };
+    var Tokenizer = function() {
+      this.tokenizedStr_ = '';
+      this.originalTokens_ = [];
+    };
+    Tokenizer.prototype.replace = function(tokenIndex, value) {
+      this.originalTokens_[tokenIndex] = value;
+      return this.rebuild();
+    };
+    Tokenizer.prototype.tokenTo = 
+        function(str, index, stopChars, not, opt_escape) {
+      var start = index;
+      var stopCharsArr = stopChars.split('');
+      var token = '';
+      for  (; index < str.length; index++) {
+        if (opt_escape && str[index] == opt_escape) {
+          index += 1; // Skip the next char
+        } else if (
+            (not && $.inArray(str[index], stopCharsArr) < 0) ||
+            (!not && $.inArray(str[index], stopCharsArr) >=0)) {
+          break;
+        }
+        if (index < str.length) {
+          token += str[index];
+        }
+      }
+      return {index: index, token: token, original: str.slice(start, index)};
+    };
+    Tokenizer.prototype.nextToken = function(str, index) {
+      var delimiterResult = this.tokenTo(str, index, ' =', true /* not */);
+      this.tokenizedStr_ += delimiterResult.original;
+      var start = delimiterResult.index;
+      if (start >= str.length) {
+        return null;
+      }
+      var stopAt = ' =';
+      if (str[start] == '"') {
+        stopAt = '"';
+        start++;
+      }
+      var result = this.tokenTo(str, start, stopAt, false /* not */, '\\');
+      this.tokenizedStr_ += '$' + this.originalTokens_.length + '$';
+      if (stopAt == '"') {
+        result.index ++; // Skip the quote in the next iteration.
+        result.original = '"' + result.original + '"';
+      }
+      return result;
+    };
+    Tokenizer.prototype.tokenize = function(str) {
+      var tokens = [];
+      this.originalTokens_ = [];
+      var index = 0;
+      var result;
+      while (index < str.length && (result = this.nextToken(str, index))) {
+        index = result.index;
+        tokens.push(result.token);
+        this.originalTokens_.push(result.original);
+      }
+      return tokens;
+    };
+    Tokenizer.prototype.endsInDelimiter = function() {
+      return this.tokenizedStr_.length > 0 && !this.tokenizedStr_.endsWith('$');
+    };
+    Tokenizer.prototype.rebuild = function() {
+      var str = this.tokenizedStr_;
+      for (var i = 0; i < this.originalTokens_.length; i++) {
+        str = str.replace('$' + i + '$', this.originalTokens_[i]);
+      }
+      return str;
+    };
+    Tokenizer.tokenize = function(str) {
+      return new Tokenizer().tokenize(str);
+    };
+    
+    // Events
+    var EventBus = function() {
+      this.listeners_ = {};
+    };
+    EventBus.prototype.getListeners_ = function(type) {
+      return this.listeners_[type] || [];
+    };
+    EventBus.prototype.subscribe = function(type, fn) {
+      this.listeners_[type] = this.getListeners_(type);
+      this.listeners_[type].push(fn);
+    };
+    EventBus.prototype.publish = function(type, opt_data) {
+      util.array.each(this.getListeners_(type), function(listener) {
+        listener(opt_data);
+      });
+    };
+    var eBus = new EventBus();
+
+
+    // Console and FileSystem
+    var console = {};
+    console.FileSystem = function() {
+      this.path_ = [];
+      this.files_ = {};
+      this.folderTabCompleter = new TabCompleter();
+      this.fileTabCompleter = new TabCompleter();
+    };
+    console.FileSystem.prototype.init = function(startFolderId) {
+      this.path_ = [];
+      this.files_ = {};
+      return this.cdById(startFolderId);
+    };
+    console.FileSystem.prototype.addToPath_ = function(folder) {
+      this.path_.push(folder);
+      this.setPath_(this.path_);
+    };
+    console.FileSystem.prototype.setPath_ = function(path) {
+      this.path_ = path;
+      // Populate the cache.
+      this.ls({force: true});
+      eBus.publish('fs-cd', this.path_);
+    };
+    console.FileSystem.prototype.getHereId = function() {
+      return this.path_.length > 0 ? this.path_[this.path_.length - 1].id : null;
+    };
+    console.FileSystem.prototype.addFiles = function(file) {
+      util.array.each(file, this.addFile.bind(this));
+    };
+    console.FileSystem.prototype.addFile = function(file) {
+      this.files_[file.id] = file;
+    };
+    console.FileSystem.Query = function(fs) {
+      this.fs_ = fs;
+      this.predicates_ = [];
+    };
+    console.FileSystem.Query.prototype.id = function(id) {
+      this.predicates_.push(function(file) {
+        return file.id == id;
+      });
+      return this;
+    };
+    console.FileSystem.Query.prototype.in = function(folderId) {
+      this.predicates_.push(function(file) {
+        var parentIds = util.array.map(file.parents || [], 
+            function(parent) { return parent.id; });
+        return $.inArray(folderId, parentIds) >= 0;
+      });
+      return this;
+    };
+    console.FileSystem.Query.prototype.here = function() {
+      var hereId = this.fs_.getHereId();
+      return hereId ? this.in(hereId) : this;
+    };
+    console.FileSystem.Query.prototype.is = function(mimeType) {
+      this.predicates_.push(function(file) {
+        return file.mimeType == mimeType;
+      });
+      return this;
+    };
+    console.FileSystem.Query.prototype.name = function(title) {
+      this.predicates_.push(function(file) {
+        return file.title == title;
+      });
+      return this;
+    };
+    console.FileSystem.Query.prototype.matches = function(predicate) {
+      this.predicates_.push(predicate);
+      return this;
+    };
+    console.FileSystem.Query.prototype.go = function() {
+      return this.fs_.find(this.predicates_);
+    };
+    console.FileSystem.prototype.query = function(global) {
+      var query = new console.FileSystem.Query(this)
+      return global ? query : query.here();
+    };
+    console.FileSystem.prototype.find = function(predicates) {
+      var matching = [];
+      for (var fileId in this.files_) {
+        var matches = util.array.all(predicates, function(predicate) {
+          return predicate(this.files_[fileId]);
+        }.bind(this));
+        if (matches) {
+          matching.push(this.files_[fileId]);
+        }
+      }
+      return matching;
+    };
+    console.FileSystem.prototype.cd = function(dirName) {
+      if (dirName == '..') {
+        this.setPath_(this.path_.slice(0, -1));
+        return Deferred.succeed();
+      } else {
+        var matchingDirs = this.query().name(dirName).is(FOLDER_MIMETYPE).go();
+				if (matchingDirs.length > 0) {
+					this.addToPath_(matchingDirs[0]);
+				  return Deferred.succeed();
+				} else {
+					return this.cdById(dirName);
+				}
+      }
+    };
+    console.FileSystem.prototype.cdById = function(id) {
+      var matchingDirs = this.query(true).id(id).is(FOLDER_MIMETYPE).go();
+      if (matchingDirs.length > 0) {
+  			this.addToPath_(matchingDirs[0]);
+				return Deferred.succeed();
+			} else {
+        var params = {
+          fields: FIELDS
+        };
+        var deferred = new Deferred();
+        Api.exec('GET', 'drive', 'v2', 'files/' + id, params).addCallbacks(
+            function(result) {
+              this.addFile(result);
+              this.setPath_([result]);
+              deferred.callback();
+            }.bind(this),
+            function(result) {
+              deferred.errback('Unknown folder ' + id);
+            });
+				return deferred;
+			}
+    };
+    console.FileSystem.prototype.immediateLs = function(opt_options) {
+      var options = opt_options || {};
+      var query = this.query();
+      if (options.isFolder) {
+        query.is(FOLDER_MIMETYPE);
+      }
+      return query.go();
+    };
+    console.FileSystem.prototype.ls = function(opt_options) {
+      var options = opt_options || {};
+  		var hereId = this.getHereId();
+      if (options.force) {
+				var deferred = new Deferred();
+				var params = {
+					'fields': 'items(' + FIELDS + ')',
+					'maxResults': 100,
+					'q': 'trashed=false'
+				};
+				if (hereId) {
+					params['q'] += ' and "' + hereId + '" in parents';
+				}
+				if (options.isFolder) {
+					params['q'] += ' and mimeType="' + FOLDER_MIMETYPE + '"';
+				}
+				// Implement paging
+				Api.exec('GET', 'drive', 'v2', 'files', params).addCallbacks(
+						function(result) {
+							if (result.items) {
+								this.addFiles(result.items);
+							}
+							deferred.callback(result.items);
+              this.folderTabCompleter.clear();
+              this.folderTabCompleter.addAll(util.array.map(
+                  this.immediateLs({isFolder: true}), 
+                  function(file) {
+                    return file.title;
+                  }));
+              this.fileTabCompleter.clear();
+              this.fileTabCompleter.addAll(util.array.map(
+                  this.immediateLs({}), 
+                  function(file) {
+                    return file.title;
+                  }));
+						}.bind(this),
+						function(error) {
+							deferred.errback(error);
+						});
+        return deferred;
+			} else {
+			  return Deferred.succeed(this.immediateLs(options));
+			}
+    };
+    console.FileSystem.prototype.mkfile = function(title, mimeType) {
+      var body = {
+        title: title,
+        mimeType: mimeType,
+        parents: [{
+          id: this.getHereId()
+        }]
+      };
+      var deferred =
+          Api.exec('POST', 'drive', 'v2', 'files', {}, JSON.stringify(body));
+      deferred.addCallbacks(function(addedFile) {
+        this.files_[addedFile.id] = addedFile;
+      }.bind(this), null);
+      return deferred;
+    };
+    console.FileSystem.prototype.rm = function(filename) {
+      var matching = this.query().name(filename).go();
+      if (matching.length > 0) {
+        var deferred = 
+            Api.exec('DELETE', 'drive', 'v2', 'files/' + matching[0].id, {});
+        deferred.addCallbacks(function() {
+          delete this.files_[matching[0].id];
+        }.bind(this), null);
+        return deferred;
+      } else {
+        return Deferred.fail('No such file ' + filename);
+      }
+    };
+    console.FileSystem.prototype.getHere = function(dir) {
+      return this.path_;
+    };
+    
+    
+    console.Apps = function() {
+      this.apps_ = {};
+    };
+    console.Apps.prototype.init = function() {
+      // Populate the cache.
+      this.ls({force: true});
+    };
+    console.Apps.prototype.setApps = function(apps) {
+      this.apps_ = [];
+      util.array.each(apps, function(app) {
+        this.apps_[app.id] = app;
+      }.bind(this));
+    };
+    console.Apps.prototype.ls = function(opt_options) {
+      var options = opt_options || {};
+      if (options.force) {
+				var deferred = new Deferred();
+				// Implement paging
+				var params = {'fields': 'items(' + APP_FIELDS + ')'};
+				Api.exec('GET', 'drive', 'v2', 'apps', params).addCallbacks(
+						function(result) {
+							if (result.items) {
+								this.setApps(result.items);
+							}
+							deferred.callback(result.items);
+						}.bind(this),
+						function(error) {
+							deferred.errback(error);
+						});
+				return deferred;
+      } else {
+        return Deferred.succeed(this.find(function(app) { return true }));
+      }
+    };
+    console.Apps.prototype.open = function(filename) {
+      var files = fs.query().name(filename).go();
+      if (files.length == 0) {
+        return Deferred.fail('No known file ' + filename);
+      }
+      var file = files[0];
+      var apps = this.find(function(app) {
+        return ($.inArray(file.mimeType, app.primaryMimeTypes) >= 0 ||
+            $.inArray(file.mimeType, app.secondaryMimeTypes) >= 0 ||
+            $.inArray(file.fileExtension, app.primaryFileExtensions) >=0 ||
+            $.inArray(file.fileExtension, app.secondaryFileExtensions) >=0) &&
+            !!app.openUrlTemplate;
+      });
+      if (apps.length == 0) {
+        return Deferred.fail('No apps can open ' + filename);
+      } else {
+        var openUrl = apps[0].openUrlTemplate.replace('{ids}', file.id).replace('{exportIds}', '');
+        window.open(openUrl, '_blank');
+        return Deferred.succeed();
+      }
+    };
+    console.Apps.prototype.find = function(predicate) {
+      var matching = [];
+      for (var appId in this.apps_) {
+        if (predicate(this.apps_[appId])) {
+          matching.push(this.apps_[appId]);
+        }
+      }
+      return matching;
+    };
+    
+    
+    console.Console = function(fileSystem) {
+      this.cursor_ = $('#input-cursor');
+      this.consoleEl_ = $('#console');
+      this.consoleEl_.on('mouseup', this.onMouseUp_.bind(this));
+      this.outputEl_ = $('#output');
+      this.inputContainerEl_ = $('#input-container');
+      this.inputEl_ = $('#input');
+      this.inputEl_.on('keydown', this.onKeyDown_.bind(this));
+      this.inputEl_.on('input', this.onInput_.bind(this));
+      this.inputEl_.val(this.prompt_);
+      this.history_ = [];
+      this.historyCursor_ = 0;
+      this.commands_ = {};
+      this.setLocation_(fileSystem.getHere());
+      this.cmdTabCompleter_ = new TabCompleter();
+      eBus.subscribe('fs-cd', this.setLocation_.bind(this));
+    };
+    console.Console.prototype.focus = function() {
+      this.inputEl_.focus();
+      this.scrollToBottom();
+    };
+    console.Console.prototype.setLocation_ = function(path) {
+      var folderNames = [];
+      util.array.each(path, function(folder) {
+        folderNames.push(folder.title);
+      });
+      var location = folderNames.length > 0 ? folderNames.join('/') : 'The ether';
+      this.cursor_.text(location + ' > ');
+    };
+    console.Console.prototype.installCommand = function(cmdName, cmd) {
+      if (!(cmd instanceof commands.Command)) {
+        cmd = new commands.Fn(this, cmd);
+      }
+      this.commands_[cmdName] = cmd;
+      this.cmdTabCompleter_.add(cmdName);
+    };
+    console.Console.prototype.onMouseUp_ = function(e) {
+      var selection = window.getSelection().toString();
+      if (selection.length == 0) {
+        util.doLater(this.focus.bind(this));
+      }
+    };
+    console.Console.prototype.onInput_ = function() {
+      this.inputEl_.height(1);
+      this.inputEl_.height(this.inputEl_[0].scrollHeight);
+    };
+    console.Console.prototype.onKeyDown_ = function(e) {
+      var handled = false;
+      if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
+      if (e.which == 13) { // Enter is pressed
+        this.submit_();
+        handled = true;
+      } else if (e.which == 38) { // Up arrow
+        this.historyCursor_ = Math.max(this.historyCursor_ - 1, 0);
+        var val = this.history_[this.historyCursor_];
+        this.inputEl_.val(val);
+        handled = true;
+      } else if (e.which == 40) { // Down arrow
+        this.historyCursor_ = Math.min(this.historyCursor_ + 1, this.history_.length);
+        var val = this.historyCursor_ < this.history_.length ?
+            this.history_[this.historyCursor_] : '';
+        this.inputEl_.val(val);
+        handled = true;
+      } else if (e.which == 9) { // Tab
+        this.tabComplete_();
+        handled = true;
+      }
+      if (handled) {
+        e.preventDefault();
+        return false;
+      }
+    };
+    console.Console.prototype.tabComplete_ = function() {
+      var tokenizer = new Tokenizer();
+      var currentVal = this.inputEl_.val();
+      var args = tokenizer.tokenize(currentVal);
+      var lastArg = tokenizer.endsInDelimiter() ?
+          '' : args[args.length - 1] || '';
+      var tabCompleter = new TabCompleter();
+      if (args.length <= 1 && !tokenizer.endsInDelimiter()) {
+        tabCompleter = this.cmdTabCompleter_;
+      } else {
+        var cmd = this.getCmd(args[0]);
+        tabCompleter = cmd ? cmd.getTabCompleter() : new TabCompleter();
+      }
+      // Add other tab completers;
+      var completion = tabCompleter.complete(lastArg);
+      if (completion && completion != lastArg) {
+        // Figure out how to replace in the middle of the string.
+        completion = completion.replace(/ /g, '\\ ');
+        this.inputEl_.val(tokenizer.replace(args.length - 1, completion));
+        this.focus();
+      } else {
+        var words = tabCompleter.list(lastArg);
+        if (words.length > 1) {
+          this.writeInput_();
+          this.writeList(words, function(word) { return word; });
+        } else if (words.length == 1) {
+          this.inputEl_.val(currentVal + ' ');
+          this.focus();
+        } else {
+          this.writeInput_();
+          this.write('No known tab completions');
+        }
+      }
+    };
+    console.Console.prototype.write = function(text) {
+      if (text && text.length > 0) {
+        this.writeHTML(
+             $('<div/>', {class: "output-block output-block-text", text: text}));
+      }
+    };
+    console.Console.prototype.writeImg = function(url) {
+      if (url && url.length > 0) {
+        this.writeHTML($('<img/>', {class: "output-block output-block-img", src: url}));
+      }
+    };
+    console.Console.prototype.writeHTML = function(el) {
+      el.appendTo(this.outputEl_);
+      util.doLater(this.scrollToBottom.bind(this));
+    };
+    console.Console.prototype.writeList = function(list, nameFn, opt_classFn) {
+      if (list.length <= 0) { return; }
+      var output =  $('<div/>', {class: "output-block"});
+      var maxLength = 0;
+      util.array.each(list, function(item) {
+        maxLength = Math.max(nameFn(item).length, maxLength);
+      });
+      util.array.each(list, function(item) {
+        var className = 'ls-item';
+        if (opt_classFn && opt_classFn(item)) {
+          className += ' ' + opt_classFn(item);
+        }
+        output.append($('<div/>', {
+            class: className,
+            text: nameFn(item),
+            width: maxLength + 'em'}));
+      });
+			c.writeHTML(output);
+    };
+    console.Console.prototype.writeInput_ = function() {
+      var val = this.inputEl_.val();
+      var inputClone = this.inputContainerEl_.clone();
+      var input = inputClone.children('#input');
+      var disabledInput = $('<div/>', {class: 'input', text: val});
+      input.before(disabledInput);
+      input.remove();
+      this.writeHTML(inputClone);
+    };
+    console.Console.prototype.scrollToBottom = function() {
+      this.consoleEl_.animate({scrollTop: this.consoleEl_[0].scrollHeight});
+    };
+    console.Console.prototype.enableInput = function(enable) {
+      if (enable) {
+        this.inputContainerEl_.show();
+        this.focus();
+      } else {
+        this.inputContainerEl_.hide();
+      }
+    };
+    console.Console.prototype.getCmd = function(cmdName) {
+      return this.commands_[cmdName];
+    };
+    console.Console.prototype.submit_ = function() {
+      var argStr = this.inputEl_.val();
+      this.writeInput_();
+      this.inputEl_.val('');
+      this.history_.push(argStr);
+      this.historyCursor_ = this.history_.length;
+      this.enableInput(false);
+      try {
+        var result = this.execStr(argStr);
+      } catch (e) {
+        this.write(e.toString());
+        this.enableInput(true);
+        return;
+      }
+      result.addBoth(function(val) { 
+        if (val) {
+          this.write(val);
+        }
+        this.enableInput(true);
+        this.focus();
+      }.bind(this));
+    };
+    console.Console.prototype.execStr = function(command) {
+      return this.exec(Tokenizer.tokenize(command), command);
+    };
+    console.Console.prototype.exec = function(args, command) {
+      if (this.commands_[args[0]]) {
+        return this.commands_[args[0]].exec(args, command);
+      } else {
+        return Deferred.fail('Sorry I don\'t know of the command ' + args[0]);
+      }
+    };
+    console.Console.prototype.getCommandTabCompleter = function() {
+      return this.cmdTabCompleter_;
+    };
+    var fs = new console.FileSystem();
+    var a = new console.Apps();
+    var c = new console.Console(fs);
+    c.enableInput(false);
+    c.write('Welcome to the Google Drive console. Connecting to Drive...');
+
+    Api = {};
+    Api.root = undefined;
+    Api.exec = function(method, collection, version, path, opt_params, opt_body) {
+      var req = gapi.client.request({
+        path: collection + '/' + version + '/' + path,
+        method: method,
+        params: opt_params,
+        body: opt_body,
+        root: Api.root
+      });
+      return Api.executeReq_(req);
+    };
+    Api.get = function(url, isBlob) {
+      var deferred = new Deferred();
+      var accessToken = gapi.auth.getToken().access_token;
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
+      xhr.onload = function() {
+        deferred.callback(isBlob ? xhr.response : xhr.responseText);
+      };
+      xhr.onerror = function() {
+        deferred.errback(xhr.responseCode + ': ' + xhr.statusText);
+      };
+      if (isBlob) {
+        xhr.responseType = 'blob';
+      }
+      xhr.send();
+      return deferred;
+    };
+    Api.executeReq_ = function(req) {
+      var deferred = new Deferred();
+      req.execute(function(resp, rawResponse) {
+        if (typeof resp === 'undefined') {
+          deferred.callback();
+        } else if (!resp) {
+          deferred.errback(rawResponse);
+        } else if (resp.error) {
+          deferred.errback(JSON.stringify(resp, null, '  '));
+        } else if (resp.result) {
+          deferred.callback(resp.result);
+        } else {
+          deferred.callback(resp);
+        }
+      });
+      return deferred;
+    };
+    
+    /** Commands */
+    commands = {};
+    commands.getParams = function(args) {
+      var params = {};
+      for (var index = 0; index < args.length; index++) {
+        if (args[index].startsWith('-')) {
+          var start = args[index].startsWith('--') ? 2 : 1;
+          var key = args[index].slice(start);
+          if (index + 1 < args.length && !args[index + 1].startsWith('-')) {
+            index++;
+            params[key] = args[index];
+          } else {
+            params[key] = true;
+          }
+        }
+      }
+      return params;
+    };
+    
+    
+    commands.Flag = function(name, defaultVal, desc) {
+      this.name_ = name;
+      this.desc_ = desc;
+      this.defaultVal_ = defaultVal;
+      this.value = defaultVal;
+    };
+    commands.Flag.prototype.helpText = function() {
+      var str = '--' + this.name_ + ' ' + this.desc_;
+      if (this.defaultVal_) {
+        str += ' (Default is ' + this.defaultVal_ + ')';
+      }
+      return str;
+    };
+    commands.Flag.prototype.reset = function() {
+      this.value = this.defaultVal_;
+    };
+    commands.Flag.prototype.get = function() {
+      return this.value;
+    };
+    
+    
+    commands.Command = function(out, desc) {
+      this.out = out;
+      this.desc_ = desc;
+      this.registeredFlags_ = {};
+      this.otherFlags_ = {};
+      this.params_ = [];
+    };
+    commands.Command.prototype.exec = function(args, command) {
+      util.object.each(this.registeredFlags_, function(flag) {
+        flag.reset();
+      });
+      this.otherFlags_ = {};
+      this.params_ = [];
+      this.parseParams(args);
+      return this.execInternal(this.params_, this.otherFlags_, args, command);
+    };
+    commands.Command.prototype.execInternal = function(params, otherFlags, args, command) {
+      return Deferred.succeed();
+    };
+    commands.Command.prototype.registerFlag = function(name, defaultVal, desc) {
+      var flag = new commands.Flag(name, defaultVal, desc);
+      if (this.registeredFlags_[name]) { 
+        throw new Error('Two flags registered with the same name ' + name);
+      }
+      this.registeredFlags_[name] = flag;
+      return flag;
+    };
+    commands.Command.prototype.parseParams = function(args) {
+      for (var index = 1; index < args.length; index++) {
+        if (args[index].startsWith('-')) {
+          var start = args[index].startsWith('--') ? 2 : 1;
+          var name = args[index].slice(start);
+          var value;
+          if (index + 1 < args.length && !args[index + 1].startsWith('-')) {
+            index++;
+            value = args[index];
+          } else {
+            value = true;
+          }
+          if (this.registeredFlags_[name]) {
+            this.registeredFlags_[name].value = value;
+          } else {
+            this.otherFlags_[name] = value;
+          }
+        } else {
+          this.params_.push(args[index]);
+        }
+      }
+    };
+    commands.Command.prototype.help = function() {
+      this.out.write(this.desc_);
+      if (Object.keys(this.registeredFlags_).length > 0) {
+        this.out.write('Available flags: ');
+        util.object.each(this.registeredFlags_, function(flag) {
+          this.out.write(flag.helpText());
+        }.bind(this));
+      }
+    };
+    commands.Command.prototype.getTabCompleter = function(args) {
+      return new TabCompleter();
+    };
+    
+    commands.Fn = function(out, fn) {
+      goog.base(this, out, 'No help description for this command.');
+      this.fn_ = fn;
+    };
+    goog.inherits(commands.Fn, commands.Command);
+    commands.Fn.prototype.execInternal = function(params, otherFlags, args, command) {
+      return this.fn_(args);
+    };
+    
+    commands.Auth = function(console) {
+      goog.base(this, console, 'Authorizes the Google API for a user.');
+      this.user_ = this.registerFlag('u', undefined, 'The auth user index for which to authorize.');
+      this.scopeStr_ = this.registerFlag('scopes', 'drive drive.apps.readonly drive.appdata userinfo.email',
+          'A space or comma separated list of scopes for which the user will be authorized. ' +
+          'These can either be full scopes, or just the portion after https://www.googleapis.com/auth/.');
+      this.clientId_ = this.registerFlag('clientId',
+          '727452872560-ckdhr0v693supibdd2dpk3b43b6mp3nc.apps.googleusercontent.com',
+          'The client ID of the app to authorize.');
+      this.immediate_ = this.registerFlag('i', false,
+          'Whether to attempt to authorize immediately without bringing up a dialog.');
+      this.console_ = console;
+    };
+    goog.inherits(commands.Auth, commands.Command);
+    commands.Auth.prototype.execInternal = function(params, otherFlags, args, command) {
+      var scopes = this.scopeStr_.get().split(/[,\s]+/);
+      for (var i = 0; i < scopes.length; i++) {
+        if (!scopes[i].startsWith('https')) {
+          scopes[i] = 'https://www.googleapis.com/auth/' + scopes[i];
+        }
+      }
+      var config = {
+        'client_id': this.clientId_.get(),
+        'scope': scopes.join(' '),
+        'authuser': this.user_.get(),
+        'immediate': this.immediate_.get()
+      };
+      var deferred = new Deferred();
+      gapi.auth.authorize(config, function(result) {
+        if (result && !result.error) {
+          Api.exec('GET', 'oauth2', 'v1', 'userinfo', {alt: 'json'}).addCallbacks(
+              function(result) {
+                this.console_.write('Authorized as ' + result.email + '. Type token to get token info.');
+                deferred.callback();
+              }.bind(this), function(result) {
+                deferred.errback('Failed to authorize ' + result);
+              });
+        } else {
+          deferred.errback(result);
+        }
+      }.bind(this));
+      return deferred;
+    };
+
+    commands.Call = function(out, fs) {
+      goog.base(this, out, 'Makes an API call. ' +
+          'Usage: call [method] [collection/version/path]. ' +
+          'Any flags not listed below are passed directly as parameters ' +
+          'to the API call.\n\n' +
+          'Example: call GET drive/v2/files');
+      this.body_ = this.registerFlag('body', '',
+          'A JSON representation of the body of the request.');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Call, commands.Command);
+    commands.Call.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 2) {
+        return Deferred.fail('Usage: call [method] [collection/version/path]');
+      }
+      var method = params[0];
+      var path = params[1].split('/');
+      if (path.length < 3) {
+        return Deferred.fail('Usage: call [method] [collection/version/path]');
+      }
+      var collection = path[0];
+      var version = path[1];
+      var remainingPath = path.slice(2).join('/');
+      var deferred = new Deferred();
+      Api.exec(method, collection, version, remainingPath, otherFlags, this.body_.get()).
+          addCallbacks(
+              function(resp) {
+                $1 = resp;
+                deferred.callback(JSON.stringify(resp, null, '  '));
+              },
+              deferred.errback.bind(deferred));
+      return deferred;
+    };
+
+    commands.Cat = function(out, fs) {
+      goog.base(this, out, 'Displays the contents of a file.');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Cat, commands.Command);
+    commands.Cat.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: cat [filename]'); }
+      var matchingFiles = this.fs_.query().name(params[0]).go();
+      var catableFile = null;
+      for (var i = 0; !catableFile && i < matchingFiles.length; i++) {
+        if (matchingFiles[i].downloadUrl) {
+          catableFile = matchingFiles[i];
+        }
+      }
+      if (!catableFile) {
+        return Deferred.fail(params[0] + ' cannot be displayed');
+      }
+      var isImage = catableFile.mimeType.startsWith('image');
+      var deferred = Api.get(catableFile.downloadUrl, isImage);
+      deferred.addCallbacks(function(response) {
+        if (isImage) {
+          this.out.writeImg((window.URL || window.webkitURL).
+              createObjectURL(response));
+        } else {
+          this.out.write(response);
+        }
+      }.bind(this), null);
+      return deferred;
+    };
+    commands.Cat.prototype.getTabCompleter = function() {
+      return this.fs_.fileTabCompleter;
+    };
+
+    commands.Cd = function(out, fs) {
+      goog.base(this, out, 'Change the current working directory. Usage cd [dirName].');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Cd, commands.Command);
+    commands.Cd.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: cd [dirName]'); }
+      return this.fs_.cd(params[0]);
+    };
+    commands.Cd.prototype.getTabCompleter = function() {
+      return this.fs_.folderTabCompleter;
+    };
+
+    commands.Connect = function(console, fs, apps) {
+      goog.base(this, console, 'Connects this console to a drive instance.');
+      this.qual_ = this.registerFlag('q', false, 'Whether to use the qual root. ' +
+          'If provided, this will override the --root flag.');
+      this.root_ = this.registerFlag('root', 'prod', 'The API root to connect to. ' +
+          'This should be of the form "https://content-googleapis-test.sandbox.google.com". ' +
+          'But you can also provide qual or prod as aliases for the TEST and PROD roots.');
+      this.fs_ = fs;
+      this.apps_ = apps;
+    };
+    goog.inherits(commands.Connect, commands.Command);
+    commands.Connect.prototype.execInternal = function(params, otherFlags, args, command) {
+      var deferred = new Deferred();
+      var root = this.qual_.get() ? 'qual' : this.root_.get();
+      switch (root) {
+        case 'qual': Api.root = QUAL_URL; break;
+        case 'prod': Api.root = undefined; break;
+        default: Api.root = root; break;
+      }
+      var getAbout = Api.exec('GET', 'drive', 'v2', 'about', {});
+      c.write('Connecting to Drive...');
+      getAbout.addCallbacks(function(resp) {
+        this.apps_.init();
+        this.fs_.init(resp.rootFolderId).addCallbacks(
+            deferred.callback.bind(deferred),
+            deferred.errback.bind(deferred));
+      }.bind(this), deferred.errback.bind(deferred));
+      return deferred;
+    };
+
+    commands.Dcall = function(out, fs) {
+      goog.base(this, out, 'Makes a Drive API call. ' +
+          'Usage: call [method] [path]. ' +
+          'Any flags not listed below are passed directly as parameters ' +
+          'to the API call.\n\n' +
+          'Example: call GET drive/v2/files');
+      this.version_ = this.registerFlag('version', 'v2', 'The version of the Drive API to use.')
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Dcall, commands.Call);
+    commands.Dcall.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 2) {
+        return Deferred.fail('Usage: call [method] [path]');
+      }
+      params[1] = 'drive/' + this.version_.get() + '/' + params[1];
+      return goog.base(this, 'execInternal', params, otherFlags, args, command);
+    };
+    
+    commands.Js = function(out) {
+      goog.base(this, out, 'Execute arbitrary javascript. Output is the output of the execution.');
+    };
+    goog.inherits(commands.Js, commands.Command);
+    commands.Js.prototype.execInternal = function(params, otherFlags, args, command) {
+      return Deferred.succeed('' + eval(command.split(' ').slice(1).join(' ')));
+    };
+
+    commands.Ls = function(out, fs) {
+      goog.base(this, out, 'List files in the current directory');
+      this.fs_ = fs;
+      this.folderOnly_ = this.registerFlag('d', false, 'Whether to list directories only.');
+      this.force_ = this.registerFlag('f', false, 'Whether to requery the API. ' +
+          'If not set, this will list files from a cache');
+    };
+    goog.inherits(commands.Ls, commands.Command);
+    commands.Ls.prototype.execInternal = function(params, otherFlags, args, command) {
+      var result = this.fs_.ls({
+        isFolder: this.folderOnly_.get(),
+        force: this.force_.get()
+      });
+      var deferred = new Deferred();
+      result.addCallbacks(
+          function(files) {
+            this.out.writeList(files,
+                function(file) { 
+                  return file.title;
+                },
+                function(file) { 
+                  return file.mimeType == FOLDER_MIMETYPE ?
+                      'ls-item-folder' : '';
+                });
+  	        deferred.callback();
+          }.bind(this),
+          deferred.errback.bind(deferred));
+      return deferred;
+    };
+
+    commands.La = function(out, apps) {
+      goog.base(this, out, 'List currently installed apps');
+      this.apps_ = apps;
+      this.force_ = this.registerFlag('f', false, 'Whether to requery the API. ' +
+          'If not set, this will list apps from a cache');
+    };
+    goog.inherits(commands.La, commands.Command);
+    commands.La.prototype.execInternal = function(params, otherFlags, args, command) {
+      var result = this.apps_.ls({
+        force: this.force_.get()
+      });
+      var deferred = new Deferred();
+      result.addCallbacks(
+          function(apps) {
+            c.writeList(apps,
+                function(app) { 
+                  return app.name;
+                });
+  	        deferred.callback();
+          }, deferred.errback.bind(deferred));
+      return deferred;
+    };
+
+    commands.Man = function(console) {
+      goog.base(this, console, 'Get help for the given command. Usage help [cmd].');
+      this.console_ = console;
+    };
+    goog.inherits(commands.Man, commands.Command);
+    commands.Man.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: man [cmd]'); }
+      var cmd = this.console_.getCmd(params[0]);
+      if (cmd) {
+        cmd.help(); 
+      } else {
+        this.out.write('No help for ' + args[0] + '. Command isn\'t installed');
+      }
+      return Deferred.succeed();
+    };
+    commands.Man.prototype.getTabCompleter = function() {
+      return this.console_.getCommandTabCompleter();
+    };
+    
+    commands.Mkdir = function(out, fs) {
+      goog.base(this, out, 'Create a directory in the current directory. Usage mkdir [foldername].');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Mkdir, commands.Command);
+    commands.Mkdir.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: mkdir [foldername]'); }
+      return this.fs_.mkfile(params[0], FOLDER_MIMETYPE);
+    };
+
+    commands.Mkfile = function(out, fs) {
+      goog.base(this, out, 'Create a file in the current directory. Usage mkdir [name] [MIME type].');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Mkfile, commands.Command);
+    commands.Mkfile.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 2) { return Deferred.fail('Usage mkdir [name] [MIME type]'); }
+      return this.fs_.mkfile(params[0], params[1]);
+    };
+
+    commands.Open = function(out, apps, fs) {
+      goog.base(this, out, 'Opens a file with the first found app that can open it. Usage: open [filename].');
+      this.fs_ = fs;
+      this.apps_ = apps;
+    };
+    goog.inherits(commands.Open, commands.Command);
+    commands.Open.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: open [filename]'); }
+      return this.apps_.open(params[0]);
+    };
+    commands.Open.prototype.getTabCompleter = function() {
+      return this.fs_.fileTabCompleter;
+    };
+
+    commands.Rm = function(out, fs) {
+      goog.base(this, out, 'Deletes a file from the given directory. Usage: rm [filename].');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Rm, commands.Command);
+    commands.Rm.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: rm [filename]'); }
+      return this.fs_.rm(params[0]);
+    };
+    commands.Rm.prototype.getTabCompleter = function() {
+      return this.fs_.fileTabCompleter;
+    };
+
+    commands.SetRoot = function(console) {
+      goog.base(this, console, 'Sets the root to use for all API calls. Usage: setRoot [qual|prod|ROOT_URL]');
+      this.console_ = console;
+    };
+    goog.inherits(commands.SetRoot, commands.Command);
+    commands.SetRoot.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) {
+        return Deferred.fail('Usage: setRoot [qual|prod|ROOT_URL]');
+      }
+      return this.console_.execStr('connect --root=' + params[0]);
+    };
+
+    commands.Start = function(console) {
+      goog.base(this, console, 'Authorizes then connects. All flags are passed through to auth and connect. ' +
+          'See man connect and man auth for details');
+      this.console_ = console;
+    };
+    goog.inherits(commands.Start, commands.Command);
+    commands.Start.prototype.execInternal = function(params, otherFlags, args, command) {
+      var deferred = new Deferred();
+      var authResult = this.console_.execStr('auth ' + command.split(' ').slice(1).join(' '));
+      authResult.addCallbacks(function(val) {
+        connectResult = this.console_.execStr('connect ' + command.split(' ').slice(1).join(' '));
+        connectResult.addCallbacks(function(val) {
+          deferred.callback(val);
+        }, deferred.errback.bind(deferred));
+      }.bind(this), deferred.errback.bind(deferred));
+      return deferred;
+    };
+    
+    commands.Token = function(out) {
+      goog.base(this, out, 'Displays the current auth token. Usage: token');
+    };
+    goog.inherits(commands.Token, commands.Command);
+    commands.Token.prototype.execInternal = function(params, otherFlags, args, command) {
+      return Deferred.succeed(JSON.stringify(gapi.auth.getToken(), null, '  '));
+    };
+
+    $(window).load(function() {
+      c.installCommand('auth', new commands.Auth(c));
+      c.installCommand('call', new commands.Call(c));
+      c.installCommand('cat', new commands.Cat(c, fs));
+      c.installCommand('connect', new commands.Connect(c, fs, a));
+      c.installCommand('dcall', new commands.Dcall(c));
+      c.installCommand('cd', new commands.Cd(c, fs));
+      c.installCommand('js', new commands.Js(c));
+      c.installCommand('ls', new commands.Ls(c, fs));
+      c.installCommand('la', new commands.La(c, a));
+      c.installCommand('man', new commands.Man(c));
+      c.installCommand('mkdir', new commands.Mkdir(c, fs));
+      c.installCommand('mkfile', new commands.Mkfile(c, fs));
+      c.installCommand('open', new commands.Open(c, a, fs));
+      c.installCommand('rm', new commands.Rm(c, fs));
+      c.installCommand('setRoot', new commands.SetRoot(c));
+      c.installCommand('start', new commands.Start(c));
+      c.installCommand('token', new commands.Token(c));
+  
+      var q = queryParam('q');
+      var u = queryParam('u');
+      var startCommand = 'start --i';
+      if (q) {
+        startCommand += ' --q';
+      }
+      if (u) {
+        startCommand += ' --u=' + u;
+      }
+      c.execStr(startCommand).
+          addCallbacks(
+          function() {
+            c.enableInput(true);
+          },
+          function() {
+            c.write('Connection requires popup. Type start to connect.');
+            c.enableInput(true);
+          });
+    });
+  </script>
+</html>
