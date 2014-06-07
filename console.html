@@ -1244,7 +1244,7 @@
           editableFile = matchingFiles[i];
         }
       }
-      var createFileDeferred = !!editableFile ? Deferred.succeed() :
+      var createFileDeferred = !!editableFile ? Deferred.succeed(editableFile) :
           this.fs_.mkfile(params[0], (params[1] || 'text/plain'));
       var deferred = new Deferred();
       createFileDeferred.addCallbacks(function(file) {
