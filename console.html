@@ -6,7 +6,7 @@
       body {
         margin: 0;
       }
-      body,textarea {
+      body,textarea,input {
         font-family: monospace;
         font-size: 12pt;
       }
@@ -57,6 +57,38 @@
 				display: inline-block;
 				padding: 5px;
 			}
+      .full-page-control {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+      }
+      .editor-text-area {
+        background: black;
+        border: none;
+        bottom: 20px;
+        color: white;
+        margin: 0;
+        outline: none;
+        padding: 5px 10px;
+        position: absolute;
+        resize: none;
+        top: 0;
+        width: 100%;
+        word-break: break-all;
+      }
+      .editor-input {
+        bottom: 0;
+        border: none;
+        color: white;
+        background: black;
+        height: 30px;
+        outline: none;
+        padding: 5px 10px;
+        position: absolute;
+        width: 100%;
+      }
     </style>
   </head>
 
@@ -172,6 +204,12 @@
       this.isError_ = false;
       this.hasFired_ = false;
     };
+    Deferred.prototype.addCallback = function(cb) {
+      this.addCallbacks(cb, null);
+    };
+    Deferred.prototype.addErrback = function(eb) {
+      this.addCallbacks(null, eb);
+    };
     Deferred.prototype.addCallbacks = function(cb, eb) {
       if (cb) {
         this.callbacks_.push(cb);
@@ -180,9 +218,9 @@
         this.errbacks_.push(eb);
       }
       if (this.hasFired_) {
-        if (this.isError_) {
+        if (this.isError_ && eb) {
           eb(this.val_);
-        } else {
+        } else if (cb) {
           cb(this.val_);
         }
       }
@@ -204,6 +242,9 @@
       util.array.each(this.errbacks_, function(errback) {
         errback(this.val_);
       }.bind(this));
+    };
+    Deferred.prototype.follow = function(other) {
+      other.addCallbacks(this.callback.bind(this), this.errback.bind(this));
     };
     Deferred.succeed = function(val) {
       var deferred = new Deferred();
@@ -353,7 +394,7 @@
       this.listeners_[type] = this.getListeners_(type);
       this.listeners_[type].push(fn);
     };
-    EventBus.prototype.publish = function(type, opt_data) {
+    EventBus.prototype.publish = function(type, opt_data, opt_scope) {
       util.array.each(this.getListeners_(type), function(listener) {
         listener(opt_data);
       });
@@ -432,7 +473,15 @@
       return this;
     };
     console.FileSystem.Query.prototype.go = function() {
-      return this.fs_.find(this.predicates_);
+      var files = this.fs_.find(this.predicates_);
+      files.sort(function(a, b) {
+        if ( a.title < b.title )
+          return -1;
+        if ( a.title > b.title )
+          return 1;
+        return 0;
+      });
+      return files;
     };
     console.FileSystem.prototype.query = function(global) {
       var query = new console.FileSystem.Query(this)
@@ -516,27 +565,28 @@
 							if (result.items) {
 								this.addFiles(result.items);
 							}
+              this.updateTabCompleters_();
 							deferred.callback(result.items);
-              this.folderTabCompleter.clear();
-              this.folderTabCompleter.addAll(util.array.map(
-                  this.immediateLs({isFolder: true}), 
-                  function(file) {
-                    return file.title;
-                  }));
-              this.fileTabCompleter.clear();
-              this.fileTabCompleter.addAll(util.array.map(
-                  this.immediateLs({}), 
-                  function(file) {
-                    return file.title;
-                  }));
 						}.bind(this),
-						function(error) {
-							deferred.errback(error);
-						});
+						deferred.errback.bind(deferred));
         return deferred;
 			} else {
 			  return Deferred.succeed(this.immediateLs(options));
 			}
+    };
+    console.FileSystem.prototype.updateTabCompleters_ = function() {
+      this.folderTabCompleter.clear();
+      this.folderTabCompleter.addAll(util.array.map(
+          this.immediateLs({isFolder: true}), 
+          function(file) {
+            return file.title;
+          }));
+      this.fileTabCompleter.clear();
+      this.fileTabCompleter.addAll(util.array.map(
+          this.immediateLs({}), 
+          function(file) {
+            return file.title;
+          }));
     };
     console.FileSystem.prototype.mkfile = function(title, mimeType) {
       var body = {
@@ -549,7 +599,8 @@
       var deferred =
           Api.exec('POST', 'drive', 'v2', 'files', {}, JSON.stringify(body));
       deferred.addCallbacks(function(addedFile) {
-        this.files_[addedFile.id] = addedFile;
+        this.addFile(addedFile);
+        this.updateTabCompleters_();
       }.bind(this), null);
       return deferred;
     };
@@ -560,6 +611,7 @@
             Api.exec('DELETE', 'drive', 'v2', 'files/' + matching[0].id, {});
         deferred.addCallbacks(function() {
           delete this.files_[matching[0].id];
+          this.updateTabCompleters_();
         }.bind(this), null);
         return deferred;
       } else {
@@ -597,9 +649,7 @@
 							}
 							deferred.callback(result.items);
 						}.bind(this),
-						function(error) {
-							deferred.errback(error);
-						});
+						deferred.errback.bind(this));
 				return deferred;
       } else {
         return Deferred.succeed(this.find(function(app) { return true }));
@@ -816,10 +866,12 @@
         this.enableInput(true);
         return;
       }
-      result.addBoth(function(val) { 
-        if (val) {
-          this.write(val);
+      result.addErrback(function(errMsg) {
+        if (errMsg) {
+          this.write(errMsg);
         }
+      }.bind(this));
+      result.addBoth(function(val) {
         this.enableInput(true);
         this.focus();
       }.bind(this));
@@ -845,9 +897,9 @@
 
     Api = {};
     Api.root = undefined;
-    Api.exec = function(method, collection, version, path, opt_params, opt_body) {
+    Api.exec = function(method, collection, version, path, opt_params, opt_body, opt_isUpload) {
       var req = gapi.client.request({
-        path: collection + '/' + version + '/' + path,
+        path: (opt_isUpload ? 'upload/' : '') + collection + '/' + version + '/' + path,
         method: method,
         params: opt_params,
         body: opt_body,
@@ -1150,9 +1202,7 @@
       c.write('Connecting to Drive...');
       getAbout.addCallbacks(function(resp) {
         this.apps_.init();
-        this.fs_.init(resp.rootFolderId).addCallbacks(
-            deferred.callback.bind(deferred),
-            deferred.errback.bind(deferred));
+        deferred.follow(this.fs_.init(resp.rootFolderId));
       }.bind(this), deferred.errback.bind(deferred));
       return deferred;
     };
@@ -1173,6 +1223,121 @@
       }
       params[1] = 'drive/' + this.version_.get() + '/' + params[1];
       return goog.base(this, 'execInternal', params, otherFlags, args, command);
+    };
+
+    commands.Edit = function(out, fs) {
+      goog.base(this, out, 'Edit a file or create a new one.');
+      this.fs_ = fs;
+    };
+    goog.inherits(commands.Edit, commands.Command);
+    commands.Edit.prototype.execInternal = function(params, otherFlags, args, command) {
+      if (params.length < 1) { return Deferred.fail('Usage: edit [filename] [opt_mimetype]'); }
+      var matchingFiles = this.fs_.query().name(params[0]).go();
+      var editableFile = null;
+      for (var i = 0; !editableFile && i < matchingFiles.length; i++) {
+        if (matchingFiles[i].downloadUrl) {
+          editableFile = matchingFiles[i];
+        }
+      }
+      var createFileDeferred = !!editableFile ? Deferred.succeed() :
+          this.fs_.mkfile(params[0], (params[1] || 'text/plain'));
+      var deferred = new Deferred();
+      createFileDeferred.addCallbacks(function(file) {
+        var editor = new commands.Edit.Editor(file)
+        deferred.follow(editor.show(true));
+      }, deferred.errback.bind(deferred));
+      return deferred;
+    };
+    commands.Edit.prototype.getTabCompleter = function() {
+      return this.fs_.fileTabCompleter;
+    };
+
+    commands.Edit.Editor = function(file) {
+      this.file_ = file;
+      this.deferred_ = new Deferred();
+      this.editControl_ = null;
+      this.textArea_ = null;
+      this.commandInput_ = null;
+      this.createDom_();
+    };
+    commands.Edit.Editor.DEFAULT_MSG_ = 'Esc enters command mode. '+
+        'w saves, q quits, and wq saves and quits.';
+    commands.Edit.Editor.prototype.createDom_ = function() {
+      this.editControl_ = $('<div/>', {class: 'full-page-control'});
+      this.textArea_ = $('<textarea/>', {class: 'editor-text-area'});
+      this.commandInput_ = $('<input/>', {class: 'editor-input'});
+      this.editControl_.append(this.textArea_);
+      this.editControl_.append(this.commandInput_);
+      this.textArea_.on('keydown', this.onKeyDown_.bind(this));
+      this.commandInput_.on('keydown', this.onCommandKeyDown_.bind(this));
+    };
+    commands.Edit.Editor.prototype.onKeyDown_ = function(e) {
+      if (e.keyCode == 27) { // Esc
+        this.commandInput_.val('');
+        this.commandInput_.focus();
+        e.preventDefault();
+        return false;
+      }
+    };
+    commands.Edit.Editor.prototype.onCommandKeyDown_ = function(e) {
+      var handled = false;
+      if (e.which == 13) { // Enter
+        util.doLater(this.submit_.bind(this));
+        handled = true;
+      } else if (e.keyCode == 27) { // Esc
+        this.write_(commands.Edit.Editor.DEFAULT_MSG_);
+        this.textArea_.focus();
+        handled = true;
+      }
+      if (handled) {
+        e.preventDefault();
+        return false;
+      }
+    };
+    commands.Edit.Editor.prototype.submit_ = function() {
+      var commands = this.commandInput_.val().split('');
+      this.commandInput_.val('');
+      this.textArea_.focus();
+      var deferred = Deferred.succeed();
+      if ($.inArray('w', commands) >=0) {
+        deferred = this.save_();
+      }
+      if ($.inArray('q', commands) >=0) {
+        deferred.addCallback(function() {
+          this.editControl_.remove();
+          this.deferred_.callback();
+        }.bind(this));
+      }
+    };
+    commands.Edit.Editor.prototype.write_ = function(text) {
+      this.commandInput_.val(text);
+    };
+    commands.Edit.Editor.prototype.show = function() {
+      $('body').append(this.editControl_);
+      this.textArea_.focus();
+      this.write_('Loading ' + this.file_.title + '...');
+      Api.get(this.file_.downloadUrl).addCallbacks(
+          this.handleFileLoaded_.bind(this),
+          function(errorMsg) {
+            this.write_('Error loading ' + this.file_.title + ': ' + errorMsg);
+          });
+      return this.deferred_;
+    };
+    commands.Edit.Editor.prototype.handleFileLoaded_ = function(content) {
+      this.textArea_.val(content);
+      this.textArea_[0].setSelectionRange(0, 0);
+      this.write_(commands.Edit.Editor.DEFAULT_MSG_);
+    };
+    commands.Edit.Editor.prototype.save_ = function() {
+      var deferred = Api.exec('PUT', 'drive', 'v2', 'files/' + this.file_.id,
+          {}, this.textArea_.val(), true);
+      this.write_('Saving ' + this.file_.title + '...');
+      deferred.addCallbacks(function() {
+        this.write_('Saved');
+      }.bind(this), function() {
+        this.write_('Error saving ' + this.file_.title);
+      }.bind(this));
+      return deferred;
     };
     
     commands.Js = function(out) {
@@ -1324,10 +1489,7 @@
       var deferred = new Deferred();
       var authResult = this.console_.execStr('auth ' + command.split(' ').slice(1).join(' '));
       authResult.addCallbacks(function(val) {
-        connectResult = this.console_.execStr('connect ' + command.split(' ').slice(1).join(' '));
-        connectResult.addCallbacks(function(val) {
-          deferred.callback(val);
-        }, deferred.errback.bind(deferred));
+        deferred.follow(this.console_.execStr('connect ' + command.split(' ').slice(1).join(' ')));
       }.bind(this), deferred.errback.bind(deferred));
       return deferred;
     };
@@ -1346,6 +1508,7 @@
       c.installCommand('cat', new commands.Cat(c, fs));
       c.installCommand('connect', new commands.Connect(c, fs, a));
       c.installCommand('dcall', new commands.Dcall(c));
+      c.installCommand('edit', new commands.Edit(c, fs));
       c.installCommand('cd', new commands.Cd(c, fs));
       c.installCommand('js', new commands.Js(c));
       c.installCommand('ls', new commands.Ls(c, fs));
