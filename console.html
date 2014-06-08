@@ -222,6 +222,8 @@
     util.doLater = function(fn) {
       window.setTimeout(fn, 0);
     };
+    var Predicates = {};
+    Predicates.ALL = function(obj) { return true; };
     var Deferred = function() {
       this.callbacks_ = [];
       this.errbacks_ = [];
@@ -446,7 +448,6 @@
       this.path_ = [];
       this.files_ = {};
       this.filesByParent_ = {};
-      this.fileTabCompleter = new WordTabCompleter();
       this.folderPathTabCompleter = new PathTabCompleter();
       this.pathTabCompleter = new PathTabCompleter();
     };
@@ -454,7 +455,6 @@
       this.path_ = [];
       this.files_ = {};
       this.filesByParent_ = {};
-      this.fileTabCompleter = new WordTabCompleter();
       this.folderPathTabCompleter = new PathTabCompleter();
       this.pathTabCompleter = new PathTabCompleter();
       this.fetchFolders_();
@@ -463,14 +463,14 @@
     cons.FileSystem.prototype.fetchFolders_ = function(opt_nLoaded, opt_pageToken) {
       var nLoaded = opt_nLoaded || 0;
       var params = {
-        'q': 'trashed=false and mimeType="' + FOLDER_MIMETYPE + '",
+        'q': 'trashed=false and mimeType="' + FOLDER_MIMETYPE + '"',
         'maxResults': 500, 
         'pageToken': opt_pageToken,
         'fields': 'items(' + FIELDS +'),nextPageToken'
       };
       Api.exec('GET', 'drive', 'v2', 'files', params).addCallback(
           function(result) {
-            this.addFiles(result.items);
+            this.addFiles_(result.items);
             nLoaded += result.items.length;      
             eBus.publish('fs-folders-loaded', {
               num: nLoaded,
@@ -497,14 +497,14 @@
     cons.FileSystem.prototype.getHereId = function() {
       return this.path_.length > 0 ? this.path_[this.path_.length - 1].id : null;
     };
-    cons.FileSystem.prototype.addFiles = function(file) {
+    cons.FileSystem.prototype.addFiles_ = function(file) {
       util.array.each(file, function(file) {
-        this.addFile(file, true);
+        this.addFile_(file, true);
       }.bind(this));
       this.updateTabCompleters_();
     };
-    cons.FileSystem.prototype.addFile = function(file, opt_dontUpdateTabCompleters) {
-      this.removeFile(file.id);
+    cons.FileSystem.prototype.addFile_ = function(file, opt_dontUpdateTabCompleters) {
+      this.removeFile_(file.id);
       this.files_[file.id] = file;
       if (file.parents.length == 0) {
         var children = this.filesByParent_['NOPARENT'] = this.filesByParent_['NOPARENT'] || {};
@@ -519,7 +519,7 @@
         this.updateTabCompleters_();
       }
     };
-    cons.FileSystem.prototype.removeFile = function(id) {
+    cons.FileSystem.prototype.removeFile_ = function(id) {
       var file = this.files_[id];
       if (file) {
         delete this.files_[id];
@@ -527,12 +527,13 @@
           delete this.filesByParent_['NOPARENT'][id];
         } else {
           util.array.each(file.parents, function(parent) {            
-            delete this.filesByParent_['NOPARENT'][id];
+            delete this.filesByParent_[parent.id][id];
           }.bind(this));
         }
       }
     };
-    cons.FileSystem.prototype.resolve = function(path) {
+    cons.FileSystem.prototype.resolve = function(path, opt_predicate) {
+      var predicate = opt_predicate || Predicates.ALL;
       var isAbsolute = path.startsWith('/');
       path = path.replace(/\/$|^\//g, ''); // Remove end slashes.
       var folderNames = path.split('/');
@@ -541,25 +542,209 @@
       for (var i = 0; i < folderNames.length; i++) {
         var folderName = folderNames[i];
         resolvedPathNames.push(folderName);
-        parent = resolvedPath.length > 0 ? resolvedPath[resolvedPath.length - 1].id : null;
-        var matching = this.query().name(folderName).in(parent).go();
-        if (matching.length == 0) {
-          return Deferred.fail(resolvedPathNames.join('/') + ' does not exist');
+        if (folderName == '..') {
+          if (resolvedPath.length > 0) {
+            resolvedPath = resolvedPath.slice(0, resolvedPath.length - 1);
+          } else {
+            return Deferred.fail(resolvedPathNames.join('/') + ' does not exist');
+          }
         } else {
-          var currentItem = (i == folderNames.length - 1) ?
-            matching[0] :
-            util.array.first(matching, function(file) {
+          var currParent = resolvedPath.length > 0 ?
+              resolvedPath[resolvedPath.length - 1].id : null;
+          var matching = this.query().name(folderName).in(currParent).go();
+          if (matching.length == 0) {
+            return Deferred.fail(resolvedPathNames.join('/') + ' does not exist');
+          } else if (i == folderNames.length - 1) {
+            var resolvedPaths = [];
+            util.array.each(matching, function(file) {
+              var resolvedPathCopy = $.merge([], resolvedPath);
+              resolvedPathCopy.push(file);
+              resolvedPaths.push(resolvedPathCopy);
+            });
+            return Deferred.succeed(resolvedPaths);
+          } else {
+            var currentItem = util.array.first(matching, function(file) {
               return file.mimeType == FOLDER_MIMETYPE;
             });
-          if (!currentItem) {
-            return Deferred.fail(resolvedPathNames.join('/') + ' is not a folder');
-          } else {
-            resolvedPath.push(currentItem);
+            if (!currentItem) {
+              return Deferred.fail(resolvedPathNames.join('/') + ' is not a folder');
+            } else {
+              resolvedPath.push(currentItem);
+            }
           }
         }
       }
-      return Deferred.succeed(resolvedPath);
+      return Deferred.succeed([resolvedPath]);
     };
+    cons.FileSystem.prototype.cd = function(path) {
+      var resolvedPaths = this.resolve(path);
+      var deferred = new Deferred();
+      resolvedPaths.addCallbacks(function(paths) {
+        this.setPath_(paths[0]);
+        deferred.callback();
+      }.bind(this), function(error) {
+        if (path.split('/').length == 1) {
+          deferred.follow(this.cdById(dirName));
+        } else {
+          deferred.errback(error);
+        }
+      });
+      return deferred;
+    };
+    cons.FileSystem.prototype.cdById = function(id) {
+      var matchingDirs = this.query().anywhere().id(id).is(FOLDER_MIMETYPE).go();
+      if (matchingDirs.length > 0) {
+        this.setPath_([matchingDirs[0]]);
+        return Deferred.succeed();
+      } else {
+        var params = {
+          'fields': FIELDS,
+          'q': 'trashed = false'
+        };
+        var deferred = new Deferred();
+        Api.exec('GET', 'drive', 'v2', 'files/' + id, params).addCallbacks(
+            function(result) {
+              this.addFile_(result);
+              this.setPath_([result]);
+              deferred.callback();
+            }.bind(this),
+            function(result) {
+              deferred.errback('Unknown folder ' + id);
+            });
+        return deferred;
+      }
+    };
+    cons.FileSystem.prototype.ls = function(opt_options, opt_path) {
+      var deferred = new Deferred();
+      var resolvedPaths = opt_path ? this.resolve(opt_path) : Deferred.succeed([]);
+      resolvedPaths.addCallbacks(function(paths) {
+        var parentId = this.getHereId();
+        if (paths.length > 0) {
+          var path = paths[0];
+          if (path.length > 0) {
+            var parent = path[path.length - 1];
+            if (parent.mimeType != FOLDER_MIMETYPE) {
+              deferred.errback(opt_path + ' is not a folder');
+              return;
+            }
+            parentId = parent.id;
+          } else {
+            parentId = null;
+          }
+        }
+        var options = opt_options || {};
+        if (options.force) {
+          var params = {
+            'fields': 'items(' + FIELDS + ')',
+            'maxResults': 100,
+            'q': 'trashed=false'
+          };
+          if (parentId) {
+            params['q'] += ' and "' + parentId + '" in parents';
+          }
+          if (options.isFolder) {
+            params['q'] += ' and mimeType="' + FOLDER_MIMETYPE + '"';
+          }
+          // Implement paging
+          Api.exec('GET', 'drive', 'v2', 'files', params).addCallbacks(
+              function(result) {
+                if (result.items) {
+                  this.addFiles_(result.items);
+                }
+                deferred.callback(result.items);
+              }.bind(this),
+              deferred.errback.bind(deferred));
+          return deferred;
+        } else {
+          var options = opt_options || {};
+          var query = this.query().in(parentId);
+          if (options.isFolder) {
+            query.is(FOLDER_MIMETYPE);
+          }
+          deferred.callback(query.go());
+        }
+      }.bind(this), deferred.errback.bind(deferred));
+      return deferred;
+    };
+    cons.FileSystem.prototype.updateTabCompleters_ = function() {
+      this.folderPathTabCompleter.clear();
+      this.folderPathTabCompleter.addAll(this.getPaths(this.getHereId(), true /* foldersOnly */));
+      this.pathTabCompleter.clear();
+      this.pathTabCompleter.addAll(this.getPaths(this.getHereId()));
+    };
+    cons.FileSystem.prototype.getPaths = function(opt_from, opt_foldersOnly) {
+      var children = this.query().in(opt_from || null).go();
+      if (children.length == 0) {
+        return [];
+      } else {
+        var paths = [];
+        util.array.each(children, function(child) {
+          if (!opt_foldersOnly || child.mimeType == FOLDER_MIMETYPE) {
+            var pathsFromChild = this.getPaths(child.id, opt_foldersOnly);
+            var pathToChild = (!!opt_from ? '' : '/') + child.title;
+            paths.push(pathToChild);
+            util.array.each(pathsFromChild, function(pathFromChild) {
+              paths.push(pathToChild + '/' + pathFromChild);
+            });
+          }
+        }.bind(this));
+        return paths;
+      }
+    };
+    cons.FileSystem.prototype.mkfile = function(path, mimeType) {
+      var lastSlash = path.lastIndexOf('/');
+      var folderPath = path.slice(0, lastSlash + 1);
+      var filename = path.slice(lastSlash + 1);
+      var deferred = new Deferred();
+      var resolvedPaths = folderPath.length > 0 ? this.resolve(folderPath) : Deferred.succeed([]);
+      resolvedPaths.addCallbacks(function(paths) {
+        var path = paths[0] ? paths[0] : '';
+        var parent = path.length > 0  ? path[path.length - 1] : null;
+        if (!!parent && parent.mimeType != FOLDER_MIMETYPE) {
+          deferred.errback(folderPath + ' is not a folder');
+          return;
+        } 
+        var body = {
+          title: filename,
+          mimeType: mimeType,
+          parents: [{
+            id: !!parent ? parent.id : this.getHereId()
+          }],
+          fields: FIELDS
+        };
+        var createFile =
+            Api.exec('POST', 'drive', 'v2', 'files', {}, JSON.stringify(body));
+        createFile.addCallbacks(function(addedFile) {
+          this.addFile_(addedFile);
+          this.updateTabCompleters_();
+        }.bind(this), null);
+        deferred.follow(createFile);
+      }.bind(this), deferred.errback.bind(deferred));
+      return deferred;   
+    };
+    cons.FileSystem.prototype.rm = function(path) {
+      var deferred = new Deferred();
+      var resolvedPaths = this.resolve(path);
+      resolvedPaths.addCallbacks(function(paths) {
+        var path = paths[0]
+        var file = path[path.length - 1];
+        var deleteDeferred = Api.exec('DELETE', 'drive', 'v2', 'files/' + file.id, {});
+        deleteDeferred.addCallbacks(function() {
+          this.removeFile_(file.id);
+          this.updateTabCompleters_();
+        }.bind(this), null);
+        deferred.follow(deleteDeferred)
+      }.bind(this), deferred.errback.bind(deferred));
+      return deferred;
+    };
+    cons.FileSystem.prototype.getPath = function(dir) {
+      return this.path_;
+    };
+    cons.FileSystem.prototype.query = function() {
+      return new cons.FileSystem.Query(this)
+    };
+    
+    
     cons.FileSystem.Query = function(fs) {
       this.fs_ = fs;
       this.files_ = {};
@@ -620,160 +805,7 @@
       });
       return matching;
     };
-    cons.FileSystem.prototype.query = function() {
-      return new cons.FileSystem.Query(this)
-    };
-    cons.FileSystem.prototype.cd = function(path) {
-      if (path == '..') { // TODO(eschoeffler): make this work for full paths
-        this.setPath_(this.path_.slice(0, -1));
-        return Deferred.succeed();
-      } else {
-        var resolvedPath = this.resolve(path);
-        var deferred = new Deferred();
-        resolvedPath.addCallbacks(function(path) {
-          this.setPath_(path);
-          deferred.callback();
-        }.bind(this), function(error) {
-          if (path.split('/').length == 1) {
-            this.cdById(dirName).addCallbacks(deferred.callback.bind(deferred),
-                function() {
-                  deferred.errback(error);
-                });;
-          } else {
-            deferred.errback(error);
-          }
-        });
-        return deferred;
-      }
-    };
-    cons.FileSystem.prototype.cdById = function(id) {
-      var matchingDirs = this.query().anywhere().id(id).is(FOLDER_MIMETYPE).go();
-      if (matchingDirs.length > 0) {
-        this.addToPath_(matchingDirs[0]);
-        return Deferred.succeed();
-      } else {
-        var params = {
-          'fields': FIELDS,
-          'q': 'trashed = false'
-        };
-        var deferred = new Deferred();
-        Api.exec('GET', 'drive', 'v2', 'files/' + id, params).addCallbacks(
-            function(result) {
-              this.addFile(result);
-              this.setPath_([result]);
-              deferred.callback();
-            }.bind(this),
-            function(result) {
-              deferred.errback('Unknown folder ' + id);
-            });
-        return deferred;
-      }
-    };
-    cons.FileSystem.prototype.immediateLs = function(opt_options) {
-      var options = opt_options || {};
-      var query = this.query();
-      if (options.isFolder) {
-        query.is(FOLDER_MIMETYPE);
-      }
-      return query.go();
-    };
-    cons.FileSystem.prototype.ls = function(opt_options) {
-      var options = opt_options || {};
-      var hereId = this.getHereId();
-      if (options.force) {
-        var deferred = new Deferred();
-        var params = {
-          'fields': 'items(' + FIELDS + ')',
-          'maxResults': 100,
-          'q': 'trashed=false'
-        };
-        if (hereId) {
-          params['q'] += ' and "' + hereId + '" in parents';
-        }
-        if (options.isFolder) {
-          params['q'] += ' and mimeType="' + FOLDER_MIMETYPE + '"';
-        }
-        // Implement paging
-        Api.exec('GET', 'drive', 'v2', 'files', params).addCallbacks(
-            function(result) {
-              if (result.items) {
-                this.addFiles(result.items);
-              }
-              deferred.callback(result.items);
-            }.bind(this),
-            deferred.errback.bind(deferred));
-        return deferred;
-      } else {
-        return Deferred.succeed(this.immediateLs(options));
-      }
-    };
-    cons.FileSystem.prototype.updateTabCompleters_ = function() {
-      console.log('updating tab completers')
-      this.fileTabCompleter.clear();
-      this.fileTabCompleter.addAll(util.array.map(
-          this.immediateLs({}), 
-          function(file) {
-            return file.title;
-          }));
-      this.folderPathTabCompleter.clear();
-      this.folderPathTabCompleter.addAll(this.getPaths(this.getHereId(), true /* foldersOnly */));
-      console.log('done updating tab completers')
-      this.pathTabCompleter.clear();
-      this.pathTabCompleter.addAll(this.getPaths(this.getHereId()));
-    };
-    cons.FileSystem.prototype.getPaths = function(opt_from, opt_foldersOnly) {
-      var children = this.query().in(opt_from || null).go();
-      if (children.length == 0) {
-        return [];
-      } else {
-        var paths = [];
-        util.array.each(children, function(child) {
-          if (!opt_foldersOnly || child.mimeType == FOLDER_MIMETYPE) {
-            var pathsFromChild = this.getPaths(child.id, opt_foldersOnly);
-            var pathToChild = (!!opt_from ? '' : '/') + child.title;
-            paths.push(pathToChild);
-            util.array.each(pathsFromChild, function(pathFromChild) {
-              paths.push(pathToChild + '/' + pathFromChild);
-            });
-          }
-        }.bind(this));
-        return paths;
-      }
-    };
-    cons.FileSystem.prototype.mkfile = function(title, mimeType) {
-      var body = {
-        title: title,
-        mimeType: mimeType,
-        parents: [{
-          id: this.getHereId()
-        }]
-      };
-      var deferred =
-          Api.exec('POST', 'drive', 'v2', 'files', {}, JSON.stringify(body));
-      deferred.addCallbacks(function(addedFile) {
-        this.addFile(addedFile);
-        this.updateTabCompleters_();
-      }.bind(this), null);
-      return deferred;
-    };
-    cons.FileSystem.prototype.rm = function(filename) {
-      var matching = this.query().name(filename).go();
-      if (matching.length > 0) {
-        var deferred = 
-            Api.exec('DELETE', 'drive', 'v2', 'files/' + matching[0].id, {});
-        deferred.addCallbacks(function() {
-          this.removeFile(matching[0].id);
-          this.updateTabCompleters_();
-        }.bind(this), null);
-        return deferred;
-      } else {
-        return Deferred.fail('No such file ' + filename);
-      }
-    };
-    cons.FileSystem.prototype.getHere = function(dir) {
-      return this.path_;
-    };
-    
+
     
     cons.Apps = function() {
       this.apps_ = {};
@@ -804,7 +836,7 @@
             deferred.errback.bind(this));
         return deferred;
       } else {
-        return Deferred.succeed(this.find(function(app) { return true }));
+        return Deferred.succeed(this.find(Predicates.ALL));
       }
     };
     cons.Apps.prototype.open = function(file) {
@@ -847,7 +879,7 @@
       this.history_ = [];
       this.historyCursor_ = 0;
       this.commands_ = {};
-      this.setLocation_(fileSystem.getHere());
+      this.setLocation_(fileSystem.getPath());
       this.cmdTabCompleter_ = new WordTabCompleter();
       eBus.subscribe('fs-cd', this.setLocation_.bind(this));
       eBus.subscribe('fs-folders-loaded', function(e) {
@@ -872,8 +904,8 @@
       util.array.each(path, function(folder) {
         folderNames.push(folder.title);
       });
-      var location = folderNames.length > 0 ? folderNames.join('/') : 'The ether';
-      this.cursor_.text(location + ' > ');
+      var pathStr = folderNames.length > 0 ? folderNames.join('/') : 'The ether';
+      this.cursor_.text(pathStr + ' > ');
     };
     cons.Console.prototype.installCommand = function(cmdName, cmd) {
       if (!(cmd instanceof commands.Command)) {
@@ -1052,7 +1084,7 @@
     var a = new cons.Apps();
     var c = new cons.Console(fs);
     c.enableInput(false);
-    c.write('Welcome to the Google Drive cons. Connecting to Drive...');
+    c.write('Welcome to the Google Drive console. Connecting to Drive...');
 
     Api = {};
     Api.root = undefined;
@@ -1303,30 +1335,32 @@
     goog.inherits(commands.Cat, commands.Command);
     commands.Cat.prototype.execInternal = function(params, otherFlags, args, command) {
       if (params.length < 1) { return Deferred.fail('Usage: cat [filename]'); }
-      var matchingFiles = this.fs_.query().name(params[0]).go();
-      var catableFile = null;
-      for (var i = 0; !catableFile && i < matchingFiles.length; i++) {
-        if (matchingFiles[i].downloadUrl) {
-          catableFile = matchingFiles[i];
+      var deferred = new Deferred();
+      var resolvedPaths = this.fs_.resolve(params[0]);
+      resolvedPaths.addCallbacks(function(paths) {
+        var files = util.array.map(paths, function(path) { return path[path.length - 1]; });
+        var downloadableFile = util.array.first(files, function(file) {
+          return !!file.downloadUrl;
+        });
+        if (!downloadableFile) {
+          return Deferred.fail(params[0] + ' cannot be displayed');
         }
-      }
-      if (!catableFile) {
-        return Deferred.fail(params[0] + ' cannot be displayed');
-      }
-      var isImage = catableFile.mimeType.startsWith('image');
-      var deferred = Api.get(catableFile.downloadUrl, isImage);
-      deferred.addCallbacks(function(response) {
-        if (isImage) {
-          this.out.writeImg((window.URL || window.webkitURL).
-              createObjectURL(response));
-        } else {
-          this.out.write(response);
-        }
-      }.bind(this), null);
+        var isImage = downloadableFile.mimeType.startsWith('image');
+        var getContent = Api.get(downloadableFile.downloadUrl, isImage);
+        getContent.addCallbacks(function(response) {
+          if (isImage) {
+            this.out.writeImg((window.URL || window.webkitURL).
+                createObjectURL(response));
+          } else {
+            this.out.write(response);
+          }
+        }.bind(this), null);
+        deferred.follow(getContent);
+      }.bind(this), deferred.errback.bind(deferred));
       return deferred;
     };
     commands.Cat.prototype.getTabCompleter = function() {
-      return this.fs_.fileTabCompleter;
+      return this.fs_.pathTabCompleter;
     };
 
     commands.Cd = function(out, fs) {
@@ -1395,24 +1429,30 @@
     goog.inherits(commands.Edit, commands.Command);
     commands.Edit.prototype.execInternal = function(params, otherFlags, args, command) {
       if (params.length < 1) { return Deferred.fail('Usage: edit [filename] [opt_mimetype]'); }
-      var matchingFiles = this.fs_.query().name(params[0]).go();
-      var editableFile = null;
-      for (var i = 0; !editableFile && i < matchingFiles.length; i++) {
-        if (matchingFiles[i].downloadUrl) {
-          editableFile = matchingFiles[i];
-        }
-      }
-      var createFileDeferred = !!editableFile ? Deferred.succeed(editableFile) :
-          this.fs_.mkfile(params[0], (params[1] || 'text/plain'));
       var deferred = new Deferred();
-      createFileDeferred.addCallbacks(function(file) {
-        var editor = new commands.Edit.Editor(file)
-        deferred.follow(editor.show(true));
-      }, deferred.errback.bind(deferred));
+      var resolvedPaths = this.fs_.resolve(params[0]);
+      resolvedPaths.addCallbacks(function(paths) {
+        var files = util.array.map(paths, function(path) { return path[path.length - 1]; });
+        var downloadableFile = util.array.first(files, function(file) {
+          return !!file.downloadUrl;
+        });
+        if (!downloadableFile) {
+          deferred.errback(params[0] + ' cannot be edited inline, try using the open command.');
+        } else {
+          var editor = new commands.Edit.Editor(downloadableFile);
+          deferred.follow(editor.show(true));
+        }
+      }.bind(this), function() {
+        var createFileDeferred = this.fs_.mkfile(params[0], (params[1] || 'text/plain'));
+        createFileDeferred.addCallbacks(function(file) {
+          var editor = new commands.Edit.Editor(file)
+          deferred.follow(editor.show(true));
+        }, deferred.errback.bind(deferred));
+      });
       return deferred;
     };
     commands.Edit.prototype.getTabCompleter = function() {
-      return this.fs_.fileTabCompleter;
+      return this.fs_.pathTabCompleter;
     };
 
     commands.Edit.Editor = function(file) {
@@ -1524,7 +1564,7 @@
       var result = this.fs_.ls({
         isFolder: this.folderOnly_.get(),
         force: this.force_.get()
-      });
+      }, params[0]);
       var deferred = new Deferred();
       result.addCallbacks(
           function(files) {
@@ -1540,6 +1580,9 @@
           }.bind(this),
           deferred.errback.bind(deferred));
       return deferred;
+    };
+    commands.Ls.prototype.getTabCompleter = function() {
+      return this.fs_.folderPathTabCompleter;
     };
 
     commands.La = function(out, apps) {
@@ -1615,10 +1658,10 @@
     goog.inherits(commands.Open, commands.Command);
     commands.Open.prototype.execInternal = function(params, otherFlags, args, command) {
       if (params.length < 1) { return Deferred.fail('Usage: open [filename]'); }
-      var resolvedPath = this.fs_.resolve(params[0]);
+      var resolvedPaths = this.fs_.resolve(params[0]);
       var deferred = new Deferred();
-      resolvedPath.addCallbacks(function(path) {
-        deferred.follow(this.apps_.open(path[path.length - 1]));
+      resolvedPath.addCallbacks(function(paths) {
+        deferred.follow(this.apps_.open(paths[0][path.length - 1]));
       }.bind(this), deferred.errback.bind(deferred));
       return deferred;
     };
@@ -1636,7 +1679,7 @@
       return this.fs_.rm(params[0]);
     };
     commands.Rm.prototype.getTabCompleter = function() {
-      return this.fs_.fileTabCompleter;
+      return this.fs_.pathTabCompleter;
     };
 
     commands.SetRoot = function(cons) {
