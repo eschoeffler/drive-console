@@ -1,0 +1,13 @@
+application: drive-command-line
+version: 1
+runtime: python27
+api_version: 1
+threadsafe: yes
+
+handlers:
+- url: /
+  upload: s/console.html
+  static_files: s/console.html
+
+- url : /s
+  static_dir: s
