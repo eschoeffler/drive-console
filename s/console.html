@@ -584,11 +584,11 @@
         deferred.callback();
       }.bind(this), function(error) {
         if (path.split('/').length == 1) {
-          deferred.follow(this.cdById(dirName));
+          deferred.follow(this.cdById(path));
         } else {
           deferred.errback(error);
         }
-      });
+      }.bind(this));
       return deferred;
     };
     cons.FileSystem.prototype.cdById = function(id) {
@@ -1423,7 +1423,7 @@
     };
 
     commands.Edit = function(out, fs) {
-      goog.base(this, out, 'Edit a file or create a new one.');
+      goog.base(this, out, 'Edit a file or create a new one. Usage: edit [filename] [opt_mimetype]');
       this.fs_ = fs;
     };
     goog.inherits(commands.Edit, commands.Command);
@@ -1448,7 +1448,7 @@
           var editor = new commands.Edit.Editor(file)
           deferred.follow(editor.show(true));
         }, deferred.errback.bind(deferred));
-      });
+      }.bind(this));
       return deferred;
     };
     commands.Edit.prototype.getTabCompleter = function() {
